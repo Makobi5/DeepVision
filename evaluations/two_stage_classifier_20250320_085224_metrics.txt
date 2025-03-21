@@ -1,0 +1,24 @@
+Model: two_stage_classifier_20250320_085224 (Two-Stage Classifier)
+Overall Accuracy: 0.6951
+
+Per-Class Metrics:
+Normal:
+  Precision: 0.7419
+  Recall:    1.0000
+  F1-Score:  0.8519
+
+Violence:
+  Precision: 0.4000
+  Recall:    0.3333
+  F1-Score:  0.3636
+
+Weaponized:
+  Precision: 0.7000
+  Recall:    0.2917
+  F1-Score:  0.4118
+
+Confusion Matrix:
+                Normal   Violence Weaponized
+Normal            46          0          0
+Violence           5          4          3
+Weaponized        11          6          7
