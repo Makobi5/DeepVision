@@ -10,7 +10,7 @@ import traceback
 # Try to import the necessary modules, with clear error handling
 try:
     from app.utils.dataset_processing import prepare_classification_dataset
-    from app.models.improved_two_stage_model import TwoStageModel  # Import from your improved model file
+    from app.models.improved_two_stage_model import TwoStageModel  # Import from your improved model file # Import from your improved model file
 except ImportError as e:
     print(f"ERROR: Failed to import required modules: {e}")
     print("Make sure the following files exist:")
@@ -29,8 +29,9 @@ def main():
         target_dir = 'data/processed_classification'
         models_dir = 'models'
 
-        # Improved training parameters based on recommendations
-        frame_count = 10  # Increased frame count for temporal features
+        # Training parameters - updated with stage-specific values
+        frame_count = 10  # For second stage and weaponized detector
+        first_stage_frame_count = 8  # Original frame count for first stage
         use_weighted_sampler = True
         epochs_first_stage = 30
         epochs_second_stage = 50  # Increased from 40
@@ -38,13 +39,16 @@ def main():
         learning_rate_first = 0.0003
         learning_rate_second = 0.0002
         learning_rate_weaponized = 0.0002
-        dropout_rate = 0.7  # Increased dropout for better regularization
-        weight_decay = 3e-4  # Increased weight decay
-        patience_first = 12  # Increased patience as recommended
-        patience_second = 15  # Increased patience as recommended
-        patience_weaponized = 15
-        label_smoothing = 0.1
-        augment_minority = True  # Enable additional augmentation for minority classes
+        dropout_rate = 0.7  # For second stage and weaponized detector
+        weight_decay = 3e-4
+        weight_decay_first = 2e-4  # Original weight decay for first stage
+        weight_decay_second = 3e-4  # Increased weight decay for second stage
+        weight_decay_weaponized = 3e-4  # Increased weight decay for weaponized detector
+        patience_first = 10  # Original patience for first stage
+        patience_second = 15  # Increased patience for second stage
+        patience_weaponized = 15  # Patience for weaponized detector
+        label_smoothing = 0.1 #Enable additional augmentation for minority classes
+        augment_minority = True
 
         # Manual class weights to balance recognition
         class_weights_manual = {
@@ -86,6 +90,7 @@ def main():
             video_data=video_data, 
             dropout_rate=dropout_rate,
             frame_count=frame_count,
+            first_stage_frame_count=first_stage_frame_count,
             use_weighted_sampler=use_weighted_sampler,
             class_weights_manual=class_weights_manual,
             augment_minority=augment_minority
@@ -99,7 +104,9 @@ def main():
             learning_rate_first=learning_rate_first,
             learning_rate_second=learning_rate_second,
             learning_rate_weaponized=learning_rate_weaponized,
-            weight_decay=weight_decay,
+            weight_decay_first=weight_decay_first,
+            weight_decay_second=weight_decay_second,
+            weight_decay_weaponized=weight_decay_weaponized,
             patience_first=patience_first,
             patience_second=patience_second,
             patience_weaponized=patience_weaponized,
@@ -191,11 +198,61 @@ def plot_training_history(history, model_name):
             plt.ylabel('Accuracy')
             plt.legend(loc='best')
             plt.grid(True, linestyle='--', alpha=0.7)
-            
-            # Save figure
+
+            # Add weaponized detector plot
+            plt.figure(figsize=(15, 10))
+
+            plt.subplot(2, 2, 1)
+            plt.plot(history['weaponized_detector']['train_acc'], label='Train')
+            plt.plot(history['weaponized_detector']['val_acc'], label='Validation')
+            plt.title('Weaponized Detector - Model Accuracy (Normal vs Weaponized)')
+            plt.ylabel('Accuracy')
+            plt.xlabel('Epoch')
+            plt.legend(loc='lower right')
+            plt.grid(True, linestyle='--', alpha=0.7)
+
+            # Weaponized Detector - Loss
+            plt.subplot(2, 2, 2)
+            plt.plot(history['weaponized_detector']['train_loss'], label='Train')
+            plt.plot(history['weaponized_detector']['val_loss'], label='Validation')
+            plt.title('Weaponized Detector - Model Loss')
+            plt.ylabel('Loss')
+            plt.xlabel('Epoch')
+            plt.legend(loc='upper right')
+            plt.grid(True, linestyle='--', alpha=0.7)
+
+            # Weaponized Detector - Learning Rate
+            plt.subplot(2, 2, 3)
+            plt.plot(history['weaponized_detector']['learning_rates'])
+            plt.title('Weaponized Detector - Learning Rate')
+            plt.ylabel('Learning Rate')
+            plt.xlabel('Epoch')
+            plt.grid(True, linestyle='--', alpha=0.7)
+            plt.yscale('log')
+
+            # Weaponized Detector - Accuracy vs Loss
+            plt.subplot(2, 2, 4)
+            plt.scatter(history['weaponized_detector']['train_loss'], history['weaponized_detector']['train_acc'], label='Train', alpha=0.5)
+            plt.scatter(history['weaponized_detector']['val_loss'], history['weaponized_detector']['val_acc'], label='Validation', alpha=0.5)
+            plt.title('Weaponized Detector - Accuracy vs Loss')
+            plt.xlabel('Loss')
+            plt.ylabel('Accuracy')
+            plt.legend(loc='best')
+            plt.grid(True, linestyle='--', alpha=0.7)
+
+            # Save weaponized detector figure
             plt.tight_layout()
-            plt.savefig(f'figures/{model_name}_{model_type}_history.png', dpi=300)
+            plt.savefig(f'figures/{model_name}_weaponized_detector_history.png', dpi=300)
             plt.close()
+
+            print(f"Training plots saved to figures/{model_name}_*.png")
+    except Exception as e:
+        print(f"WARNING: Failed to plot training history: {e}")
+
+        # Save figure
+        plt.tight_layout()
+        plt.savefig(f'figures/{model_name}_{model_type}_history.png', dpi=300)
+        plt.close()
         
         # Create a comparison figure for all models
         plt.figure(figsize=(15, 8))

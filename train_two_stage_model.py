@@ -29,23 +29,25 @@ def main():
         target_dir = 'data/processed_classification'
         models_dir = 'models'
 
-        # Training parameters - hardcoded with optimal values
-        frame_count = 8  # Increased frame count for temporal features
+        # Training parameters - first stage remains the same, second stage improved
+        frame_count = 10  # Increased frame count for better temporal features
         use_weighted_sampler = True
         epochs_first_stage = 30
-        epochs_second_stage = 40
+        epochs_second_stage = 80  # Increased from 40
         learning_rate_first = 0.0003
-        learning_rate_second = 0.0002
-        dropout_rate = 0.6  # Increased dropout
-        weight_decay = 2e-4  # Increased weight decay
+        learning_rate_second = 0.0005  # Increased from 0.0002
+        dropout_rate = 0.6
+        weight_decay = 3e-4  # Increased from 2e-4
         patience_first = 10
-        patience_second = 12
-        label_smoothing = 0.1
+        patience_second = 20  # Increased from 12
+        label_smoothing = 0.05  # Reduced from 0.1
+        mixup_alpha = 0.2  # Added mixup augmentation
 
         print(f"Frame count: {frame_count}")
         print(f"Using weighted sampler: {use_weighted_sampler}")
         print(f"Training first stage for {epochs_first_stage} epochs with learning rate {learning_rate_first}")
         print(f"Training second stage for {epochs_second_stage} epochs with learning rate {learning_rate_second}")
+        print(f"Using mixup with alpha={mixup_alpha} for second stage")
 
         # Create models directory if it doesn't exist
         os.makedirs(models_dir, exist_ok=True)
@@ -79,7 +81,8 @@ def main():
             weight_decay=weight_decay,
             patience_first=patience_first,
             patience_second=patience_second,
-            label_smoothing=label_smoothing
+            label_smoothing=label_smoothing,
+            mixup_alpha=mixup_alpha
         )
 
         # Plot training history
