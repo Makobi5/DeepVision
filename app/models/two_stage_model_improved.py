@@ -399,13 +399,13 @@ class TwoStageModel:
         # Initialize DataLoaders with worker_init_fn for stability
         self.first_stage_train_loader = DataLoader(
             self.first_stage_train_dataset, batch_size=32, shuffle=shuffle,
-            sampler=sampler, num_workers=4, pin_memory=True, 
+            sampler=sampler, num_workers=0, pin_memory=True, 
             worker_init_fn=lambda worker_id: np.random.seed(np.random.get_state()[1][0] + worker_id)
         )
 
         self.first_stage_test_loader = DataLoader(
             self.first_stage_test_dataset, batch_size=32, shuffle=False,
-            num_workers=4, pin_memory=True,
+            num_workers=0, pin_memory=True,
             worker_init_fn=lambda worker_id: np.random.seed(np.random.get_state()[1][0] + worker_id)
         )
 
@@ -446,13 +446,13 @@ class TwoStageModel:
         # Initialize DataLoaders with worker_init_fn for stability
         self.second_stage_train_loader = DataLoader(
             self.second_stage_train_dataset, batch_size=16, shuffle=shuffle,
-            sampler=sampler, num_workers=4, pin_memory=True,
+            sampler=sampler, num_workers=0, pin_memory=True,
             worker_init_fn=lambda worker_id: np.random.seed(np.random.get_state()[1][0] + worker_id)
         )
 
         self.second_stage_test_loader = DataLoader(
             self.second_stage_test_dataset, batch_size=16, shuffle=False,
-            num_workers=4, pin_memory=True,
+            num_workers=0, pin_memory=True,
             worker_init_fn=lambda worker_id: np.random.seed(np.random.get_state()[1][0] + worker_id)
         )
 
@@ -795,6 +795,17 @@ class TwoStageModel:
         no_improve_counter = 0
         best_model_path = os.path.join('models', 'second_stage_best.pth')
 
+
+        # Add this code block for resuming training
+        start_epoch = 0
+        if resume_checkpoint and os.path.exists(resume_checkpoint):
+            checkpoint = torch.load(resume_checkpoint)
+            self.second_stage_model.load_state_dict(checkpoint['model'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            scheduler.load_state_dict(checkpoint['scheduler'])
+            start_epoch = checkpoint['epoch'] + 1
+            best_val_acc = checkpoint['best_val_acc']
+            print(f"Resuming training from epoch {start_epoch}, best val acc: {best_val_acc:.4f}")
         # Training history
         history = {
             'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'learning_rates': []
@@ -931,7 +942,7 @@ class TwoStageModel:
     def train(self, epochs_first=35, epochs_second=90, learning_rate_first=0.0004, 
         learning_rate_second=0.0006, weight_decay=4e-4, patience_first=12, 
         patience_second=25, label_smoothing=0.05, mixup_alpha=0.3):
-    """Train both stages of the model with improved parameters"""
+        """Train both stages of the model with improved parameters"""
         try:
             print("Training first stage model: Normal vs Not Normal")
             first_stage_history = self.train_first_stage(
@@ -994,130 +1005,143 @@ class TwoStageModel:
         Returns:
             dict: Dictionary containing evaluation metrics
         """
-        print("Evaluating two-stage model on test set...")
-        
-        # Initialize metrics
-        all_preds = []
-        all_labels = []
-        
-        # Set models to evaluation mode
-        self.first_stage_model.eval()
-        self.second_stage_model.eval()
-        
-        # First stage evaluation: Normal vs Not Normal
-        normal_correct = 0
-        normal_total = 0
-        not_normal_correct = 0
-        not_normal_total = 0
-        
-        with torch.no_grad():
-            for inputs, labels in self.first_stage_test_loader:
-                inputs, labels = inputs.to(self.device), labels.to(self.device)
-                
-                outputs = self.first_stage_model(inputs)
-                _, predicted = torch.max(outputs, 1)
-                
-                # Count correct predictions for each class
-                normal_mask = (labels == 0)  # Normal class
-                normal_total += normal_mask.sum().item()
-                normal_correct += ((predicted == labels) & normal_mask).sum().item()
-                
-                not_normal_mask = (labels == 1)  # Not Normal class
-                not_normal_total += not_normal_mask.sum().item()
-                not_normal_correct += ((predicted == labels) & not_normal_mask).sum().item()
-        
-        # Calculate first stage accuracy
-        normal_acc = normal_correct / normal_total if normal_total > 0 else 0
-        not_normal_acc = not_normal_correct / not_normal_total if not_normal_total > 0 else 0
-        first_stage_acc = (normal_correct + not_normal_correct) / (normal_total + not_normal_total)
-        
-        if verbose:
-            print(f"First Stage Results:")
-            print(f"  Normal Class:     {normal_correct}/{normal_total} ({normal_acc:.4f})")
-            print(f"  Not Normal Class: {not_normal_correct}/{not_normal_total} ({not_normal_acc:.4f})")
-            print(f"  Overall Accuracy: {first_stage_acc:.4f}")
-        
-        # Second stage evaluation: Violence vs Weaponized
-        violence_correct = 0
-        violence_total = 0
-        weaponized_correct = 0
-        weaponized_total = 0
-        
-        with torch.no_grad():
-            for inputs, labels in self.second_stage_test_loader:
-                inputs, labels = inputs.to(self.device), labels.to(self.device)
-                
-                outputs = self.second_stage_model(inputs)
-                _, predicted = torch.max(outputs, 1)
-                
-                # Count correct predictions for each class
-                violence_mask = (labels == 0)  # Violence class
-                violence_total += violence_mask.sum().item()
-                violence_correct += ((predicted == labels) & violence_mask).sum().item()
-                
-                weaponized_mask = (labels == 1)  # Weaponized class
-                weaponized_total += weaponized_mask.sum().item()
-                weaponized_correct += ((predicted == labels) & weaponized_mask).sum().item()
-        
-        # Calculate second stage accuracy
-        violence_acc = violence_correct / violence_total if violence_total > 0 else 0
-        weaponized_acc = weaponized_correct / weaponized_total if weaponized_total > 0 else 0
-        second_stage_acc = (violence_correct + weaponized_correct) / (violence_total + weaponized_total)
-        
-        if verbose:
-            print(f"Second Stage Results:")
-            print(f"  Violence Class:    {violence_correct}/{violence_total} ({violence_acc:.4f})")
-            print(f"  Weaponized Class:  {weaponized_correct}/{weaponized_total} ({weaponized_acc:.4f})")
-            print(f"  Overall Accuracy:  {second_stage_acc:.4f}")
-        
-        # Calculate overall accuracy
-        total_samples = normal_total + not_normal_total
-        correct_samples = normal_correct + (not_normal_correct * second_stage_acc)
-        overall_acc = correct_samples / total_samples
-        
-        if verbose:
-            print(f"Overall Model Results:")
-            print(f"  Accuracy: {overall_acc:.4f}")
-        
-        # Create confusion matrix
-        # This is a simplified approximation since we don't have the full end-to-end predictions
-        confusion_matrix = torch.zeros((3, 3), dtype=torch.long)
-        
-        # Populate confusion matrix
-        # Normal class (correctly classified)
-        confusion_matrix[0, 0] = normal_correct
-        # Normal class (misclassified)
-        confusion_matrix[0, 1] = int((normal_total - normal_correct) * violence_acc)  # As Violence
-        confusion_matrix[0, 2] = int((normal_total - normal_correct) * weaponized_acc)  # As Weaponized
-        
-        # Violence class
-        confusion_matrix[1, 0] = int(violence_total * (1 - not_normal_acc))  # As Normal
-        confusion_matrix[1, 1] = int(violence_total * not_normal_acc * violence_acc)  # As Violence
-        confusion_matrix[1, 2] = int(violence_total * not_normal_acc * (1 - violence_acc))  # As Weaponized
-        
-        # Weaponized class
-        confusion_matrix[2, 0] = int(weaponized_total * (1 - not_normal_acc))  # As Normal
-        confusion_matrix[2, 1] = int(weaponized_total * not_normal_acc * (1 - weaponized_acc))  # As Violence
-        confusion_matrix[2, 2] = int(weaponized_total * not_normal_acc * weaponized_acc)  # As Weaponized
-        
-        if verbose:
-            print("\nConfusion Matrix:")
-            classes = ['Normal', 'Violence', 'Weaponized']
-            print("            " + " ".join([f"{name:>10}" for name in classes]))
-            for i, name in enumerate(classes):
-                print(f"{name:10}" + " ".join([f"{confusion_matrix[i, j]:10d}" for j in range(len(classes))]))
-        
-        # Return metrics
-        metrics = {
-            'accuracy': overall_acc,
-            'first_stage_acc': first_stage_acc,
-            'second_stage_acc': second_stage_acc,
-            'class_acc': {
-                'Normal': normal_acc,
-                'Violence': violence_acc,
-                'Weaponized': weaponized_acc
-            },
-            'confusion_matrix': confusion_matrix.cpu().numpy()
-        }
-        
-        return metrics         
+        try:
+            print("Evaluating two-stage model on test set...")
+            
+            # Initialize metrics
+            all_preds = []
+            all_labels = []
+            
+            # Set models to evaluation mode
+            self.first_stage_model.eval()
+            self.second_stage_model.eval()
+            
+            # First stage evaluation: Normal vs Not Normal
+            normal_correct = 0
+            normal_total = 0
+            not_normal_correct = 0
+            not_normal_total = 0
+            
+            with torch.no_grad():
+                for inputs, labels in self.first_stage_test_loader:
+                    inputs, labels = inputs.to(self.device), labels.to(self.device)
+                    
+                    outputs = self.first_stage_model(inputs)
+                    _, predicted = torch.max(outputs, 1)
+                    
+                    # Count correct predictions for each class
+                    normal_mask = (labels == 0)  # Normal class
+                    normal_total += normal_mask.sum().item()
+                    normal_correct += ((predicted == labels) & normal_mask).sum().item()
+                    
+                    not_normal_mask = (labels == 1)  # Not Normal class
+                    not_normal_total += not_normal_mask.sum().item()
+                    not_normal_correct += ((predicted == labels) & not_normal_mask).sum().item()
+            
+            # Calculate first stage accuracy
+            normal_acc = normal_correct / normal_total if normal_total > 0 else 0
+            not_normal_acc = not_normal_correct / not_normal_total if not_normal_total > 0 else 0
+            first_stage_acc = (normal_correct + not_normal_correct) / (normal_total + not_normal_total)
+            
+            if verbose:
+                print(f"First Stage Results:")
+                print(f"  Normal Class:     {normal_correct}/{normal_total} ({normal_acc:.4f})")
+                print(f"  Not Normal Class: {not_normal_correct}/{not_normal_total} ({not_normal_acc:.4f})")
+                print(f"  Overall Accuracy: {first_stage_acc:.4f}")
+            
+            # Second stage evaluation: Violence vs Weaponized
+            violence_correct = 0
+            violence_total = 0
+            weaponized_correct = 0
+            weaponized_total = 0
+            
+            with torch.no_grad():
+                for inputs, labels in self.second_stage_test_loader:
+                    inputs, labels = inputs.to(self.device), labels.to(self.device)
+                    
+                    outputs = self.second_stage_model(inputs)
+                    _, predicted = torch.max(outputs, 1)
+                    
+                    # Count correct predictions for each class
+                    violence_mask = (labels == 0)  # Violence class
+                    violence_total += violence_mask.sum().item()
+                    violence_correct += ((predicted == labels) & violence_mask).sum().item()
+                    
+                    weaponized_mask = (labels == 1)  # Weaponized class
+                    weaponized_total += weaponized_mask.sum().item()
+                    weaponized_correct += ((predicted == labels) & weaponized_mask).sum().item()
+            
+            # Calculate second stage accuracy
+            violence_acc = violence_correct / violence_total if violence_total > 0 else 0
+            weaponized_acc = weaponized_correct / weaponized_total if weaponized_total > 0 else 0
+            second_stage_acc = (violence_correct + weaponized_correct) / (violence_total + weaponized_total)
+            
+            if verbose:
+                print(f"Second Stage Results:")
+                print(f"  Violence Class:    {violence_correct}/{violence_total} ({violence_acc:.4f})")
+                print(f"  Weaponized Class:  {weaponized_correct}/{weaponized_total} ({weaponized_acc:.4f})")
+                print(f"  Overall Accuracy:  {second_stage_acc:.4f}")
+            
+            # Calculate overall accuracy
+            total_samples = normal_total + not_normal_total
+            correct_samples = normal_correct + (not_normal_correct * second_stage_acc)
+            overall_acc = correct_samples / total_samples
+            
+            if verbose:
+                print(f"Overall Model Results:")
+                print(f"  Accuracy: {overall_acc:.4f}")
+            
+            # Create confusion matrix
+            # This is a simplified approximation since we don't have the full end-to-end predictions
+            confusion_matrix = torch.zeros((3, 3), dtype=torch.long)
+            
+            # Populate confusion matrix
+            # Normal class (correctly classified)
+            confusion_matrix[0, 0] = normal_correct
+            # Normal class (misclassified)
+            confusion_matrix[0, 1] = int((normal_total - normal_correct) * violence_acc)  # As Violence
+            confusion_matrix[0, 2] = int((normal_total - normal_correct) * weaponized_acc)  # As Weaponized
+            
+            # Violence class
+            confusion_matrix[1, 0] = int(violence_total * (1 - not_normal_acc))  # As Normal
+            confusion_matrix[1, 1] = int(violence_total * not_normal_acc * violence_acc)  # As Violence
+            confusion_matrix[1, 2] = int(violence_total * not_normal_acc * (1 - violence_acc))  # As Weaponized
+            
+            # Weaponized class
+            confusion_matrix[2, 0] = int(weaponized_total * (1 - not_normal_acc))  # As Normal
+            confusion_matrix[2, 1] = int(weaponized_total * not_normal_acc * (1 - weaponized_acc))  # As Violence
+            confusion_matrix[2, 2] = int(weaponized_total * not_normal_acc * weaponized_acc)  # As Weaponized
+            
+            if verbose:
+                print("\nConfusion Matrix:")
+                classes = ['Normal', 'Violence', 'Weaponized']
+                print("            " + " ".join([f"{name:>10}" for name in classes]))
+                for i, name in enumerate(classes):
+                    print(f"{name:10}" + " ".join([f"{confusion_matrix[i, j]:10d}" for j in range(len(classes))]))
+            
+            # Return metrics
+            metrics = {
+                'accuracy': overall_acc,
+                'first_stage_acc': first_stage_acc,
+                'second_stage_acc': second_stage_acc,
+                'class_acc': {
+                    'Normal': normal_acc,
+                    'Violence': violence_acc,
+                    'Weaponized': weaponized_acc
+                },
+                'confusion_matrix': confusion_matrix.cpu().numpy()
+            }
+            
+            return metrics  
+        except Exception as e:
+            print(f"ERROR during evaluation: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Return partial metrics if possible
+            return {
+                'error': str(e),
+                'accuracy': 0.0,
+                'first_stage_acc': 0.0,
+                'second_stage_acc': 0.0
+            }           
