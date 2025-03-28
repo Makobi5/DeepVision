@@ -14,7 +14,7 @@ import math
 import torch
 import random
 from torch.cuda.amp import autocast, GradScaler
-
+import warnings
 class VideoDataset(Dataset):
     def __init__(self, video_data, transform=None, frame_count=10, split='train', temporal_features=True):
         """
@@ -24,7 +24,29 @@ class VideoDataset(Dataset):
             frame_count (int): Number of frames to extract per video.
             split (str): 'train', 'test', or 'val'.
             temporal_features (bool): Whether to return temporal features (sequence of frames) or averaged frames.
+
         """
+        
+        warnings.filterwarnings("ignore", category=UserWarning)
+
+        # Check and configure device
+        def get_device():
+            if torch.cuda.is_available():
+                try:
+                    device = torch.device("cuda")
+                    print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+                    return device
+                except Exception as e:
+                    print(f"Error using CUDA: {e}")
+                    return torch.device("cpu")
+            else:
+                print("CUDA not available. Using CPU.")
+                return torch.device("cpu")
+
+        # Set device
+        self.device = get_device()
+        print(f"Using device: {self.device}")
+
         self.video_paths = []
         self.labels = []
         self.transform = transform
@@ -755,7 +777,7 @@ class TwoStageModel:
 
         return history
     def train_second_stage(self, epochs=80, learning_rate=0.0005, weight_decay=3e-4, patience=20,
-                      label_smoothing=0.05, mixup_alpha=0.2):
+                      label_smoothing=0.05, mixup_alpha=0.2, resume_checkpoint=None):
         """Train the second stage model (Violence vs Weaponized) with enhanced training techniques"""
         print("Training second stage model: Violence vs Weaponized")
 
@@ -795,24 +817,69 @@ class TwoStageModel:
         no_improve_counter = 0
         best_model_path = os.path.join('models', 'second_stage_best.pth')
 
+        history = {
+        'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'learning_rates': []
+        }
+        start_epoch = 0
+        if resume_checkpoint and os.path.exists(resume_checkpoint):
+            try:
+                checkpoint = torch.load(resume_checkpoint, map_location=self.device)
+            except FileNotFoundError:
+                print(f"Error: Checkpoint file {resume_checkpoint} not found.")
+                start_epoch = 0
+            except PermissionError:
+                print(f"Error: No permission to read checkpoint file {resume_checkpoint}")
+                start_epoch = 0
+            except torch.cuda.OutOfMemoryError:
+                print(f"Error: Not enough GPU memory to load checkpoint {resume_checkpoint}")
+                start_epoch = 0
+            except Exception as e:
+                print(f"Unexpected error loading checkpoint: {e}")
+                start_epoch = 0
+            finally:
+                # Ensure start_epoch is always defined
+                if 'checkpoint' not in locals():
+                    start_epoch = 0
+                    checkpoint = None
 
         # Add this code block for resuming training
         start_epoch = 0
         if resume_checkpoint and os.path.exists(resume_checkpoint):
-            checkpoint = torch.load(resume_checkpoint)
-            self.second_stage_model.load_state_dict(checkpoint['model'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            scheduler.load_state_dict(checkpoint['scheduler'])
-            start_epoch = checkpoint['epoch'] + 1
-            best_val_acc = checkpoint['best_val_acc']
-            print(f"Resuming training from epoch {start_epoch}, best val acc: {best_val_acc:.4f}")
-        # Training history
-        history = {
-            'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'learning_rates': []
-        }
+            try:
+                checkpoint = torch.load(resume_checkpoint, map_location=self.device)
+                
+                # Check the structure of the checkpoint
+                if isinstance(checkpoint, dict):
+                    # If checkpoint is a dictionary, load model and other states
+                    self.second_stage_model.load_state_dict(checkpoint.get('model_state_dict', checkpoint.get('model', checkpoint)))
+                    
+                    # Optionally load optimizer and scheduler states if they exist
+                    if 'optimizer_state_dict' in checkpoint:
+                        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                    if 'scheduler_state_dict' in checkpoint:
+                        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                    
+                    # Get start epoch and best validation accuracy
+                    start_epoch = checkpoint.get('epoch', 0)
+                    best_val_acc = checkpoint.get('best_val_acc', 0.0)
+                    
+                    print(f"Resuming training from epoch {start_epoch}, best val acc: {best_val_acc:.4f}")
+                else:
+                    # If checkpoint is just the model state dict
+                    self.second_stage_model.load_state_dict(checkpoint)
+                    print("Loaded model weights, starting training from beginning")
+            
+            except KeyError as e:
+                print(f"KeyError while loading checkpoint: {e}")
+                print("Starting training from beginning")
+            except Exception as e:
+                print(f"Error loading checkpoint: {e}")
+                print("Starting training from beginning")
+            
 
+      
         # Training loop
-        for epoch in range(epochs):
+        for epoch in range(start_epoch, epochs):
             # Get current learning rate
             current_lr = optimizer.param_groups[0]['lr']
             history['learning_rates'].append(current_lr)
@@ -911,6 +978,14 @@ class TwoStageModel:
                 print(f"Second Stage - Validation accuracy improved from {best_val_acc:.4f} to {val_acc:.4f}")
                 best_val_acc = val_acc
                 no_improve_counter = 0
+
+                checkpoint = {
+                    'epoch': epoch,
+                    'model_state_dict': self.second_stage_model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
+                    'best_val_acc': best_val_acc
+                }
                 torch.save(self.second_stage_model.state_dict(), best_model_path)
                 print(f"Saved best second stage model at epoch {epoch + 1}")
             else:
@@ -939,9 +1014,9 @@ class TwoStageModel:
         self.second_stage_model.eval()
 
         return history, best_model_path
-    def train(self, epochs_first=35, epochs_second=90, learning_rate_first=0.0004, 
-        learning_rate_second=0.0006, weight_decay=4e-4, patience_first=12, 
-        patience_second=25, label_smoothing=0.05, mixup_alpha=0.3):
+    def train(self, epochs_first=35, epochs_second=90, learning_rate_first=0.0004,
+        learning_rate_second=0.0006, weight_decay=4e-4, patience_first=12,
+        patience_second=25, label_smoothing=0.05, mixup_alpha=0.3, resume_checkpoint=None):
         """Train both stages of the model with improved parameters"""
         try:
             print("Training first stage model: Normal vs Not Normal")
@@ -960,7 +1035,8 @@ class TwoStageModel:
                 weight_decay=weight_decay,
                 patience=patience_second,
                 label_smoothing=label_smoothing,
-                mixup_alpha=mixup_alpha
+                mixup_alpha=mixup_alpha,  # Added the missing comma here
+                resume_checkpoint=resume_checkpoint
             )
             
             # Get the path to the saved first stage model
@@ -995,7 +1071,7 @@ class TwoStageModel:
                 history['second_stage'] = second_stage_history
                 model_paths['second_stage'] = second_stage_path
             
-            return history, model_paths      
+            return history, model_paths  
     def evaluate(self, verbose=True):
         """Evaluate the two-stage model on the test set
         

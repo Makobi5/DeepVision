@@ -111,6 +111,17 @@ def main():
             frame_count=frame_count,
             use_weighted_sampler=use_weighted_sampler
         )
+        model.first_stage_model.load_state_dict(torch.load('models/first_stage_best.pth'))
+        print("Loaded first stage model")
+        model.train_second_stage(
+            resume_checkpoint='models/second_stage_best.pth', 
+            epochs=epochs_second_stage, 
+            learning_rate=learning_rate_second, 
+            weight_decay=weight_decay,
+            patience=patience_second,
+            label_smoothing=label_smoothing,
+            mixup_alpha=mixup_alpha
+        )
         
         # Enable mixed precision training using GradScaler
         print("Training with mixed precision for better performance")

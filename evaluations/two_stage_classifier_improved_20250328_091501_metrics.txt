@@ -1,0 +1,45 @@
+================================================================================
+Model: two_stage_classifier_improved_20250328_091501 (Improved Two-Stage Classifier)
+================================================================================
+
+Overall Accuracy: 0.4959
+First Stage Accuracy: 0.7561
+Second Stage Accuracy: 0.3333
+
+--------------------------------------------------------------------------------
+Per-Class Metrics:
+--------------------------------------------------------------------------------
+Normal:
+  Accuracy:  0.6522
+  Precision: 0.9091
+  Recall:    0.6522
+  F1-Score:  0.7595
+  Support:   46
+
+Violence:
+  Accuracy:  1.0000
+  Precision: 0.2128
+  Recall:    0.9091
+  F1-Score:  0.3448
+  Support:   11
+
+Weaponized:
+  Accuracy:  0.0000
+  Precision: 0.0000
+  Recall:    0.0000
+  F1-Score:  0.0000
+  Support:   23
+
+--------------------------------------------------------------------------------
+Confusion Matrix:
+--------------------------------------------------------------------------------
+                Normal   Violence Weaponized
+Normal            30         16          0
+Violence           1         10          0
+Weaponized         2         21          0
+
+Normalized Confusion Matrix (row percentages):
+                Normal   Violence Weaponized
+Normal         65.22%      34.78%       0.00%
+Violence        9.09%      90.91%       0.00%
+Weaponized      8.70%      91.30%       0.00%
