@@ -1,0 +1,17 @@
+================================================================================
+Model: first_stage_only_classifier_20250401_200740 (First Stage Only)
+================================================================================
+
+Accuracy: 0.8537
+Precision (Normal): 0.9565
+Recall (Normal): 0.9565
+F1-Score (Normal): 0.9565
+Precision (Abnormal): 0.7222
+Recall (Abnormal): 0.7222
+F1-Score (Abnormal): 0.7222
+
+Confusion Matrix:
+True Normal: 44
+False Normal: 2
+True Abnormal: 26
+False Abnormal: 10
