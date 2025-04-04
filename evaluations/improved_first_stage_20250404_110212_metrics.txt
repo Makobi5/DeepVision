@@ -1,0 +1,16 @@
+================================================================================
+Model: improved_first_stage_20250404_110212 (Improved First Stage)
+================================================================================
+
+Overall Accuracy:        0.7195
+
+--------------------------------------------------
+Class          Precision   Recall    F1-Score  Support   
+--------------------------------------------------
+Normal         0.70910.84780.7723        46
+Not Normal     0.74070.55560.6349        36
+
+Confusion Matrix:
+               Pred Normal    Pred Abnormal  
+Actual Normal  39             7              
+Actual Abnormal16             20             
