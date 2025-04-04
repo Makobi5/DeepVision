@@ -60,16 +60,16 @@ def main():
             print(f"Using GPU: {torch.cuda.get_device_name(0)}")
             print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
 
-        # Improved training parameters
         frame_count = 10
         use_weighted_sampler = True
-        epochs_first_stage = 40  # Increased from 35
-        learning_rate_first = 0.0003  # Reduced from 0.0004
-        patience_first = 15  # Increased from 12
-        dropout_rate = 0.7  # Increased from 0.6
-        weight_decay = 5e-4  # Increased from 4e-4
-        label_smoothing = 0.1  # Increased from 0.05
-        epsilon = 5  # For class weighting
+        epochs_first_stage = 30  # Reduced from 40
+        learning_rate_first = 0.0003
+        patience_first = 8  # Reduced from 15
+        dropout_rate = 0.8  # Increased from 0.7
+        weight_decay = 1e-3  # Increased from 5e-4
+        label_smoothing = 0.1
+        epsilon = 5
+        mixup_alpha = 0.2
         
         print("\nImproved First Stage Parameters:")
         print(f"Frame count: {frame_count}")
@@ -107,6 +107,7 @@ def main():
             weight_decay=weight_decay,
             patience=patience_first,
             label_smoothing=label_smoothing,
+            mixup_alpha=mixup_alpha
             #class_weight_epsilon=epsilon  # New parameter to pass
         )
 

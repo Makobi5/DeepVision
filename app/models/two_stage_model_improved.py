@@ -197,6 +197,9 @@ class EnhancedTemporalCNN(nn.Module):
         self.temporal_bn1 = nn.BatchNorm3d(512)
         self.temporal_conv2 = nn.Conv3d(512, 256, kernel_size=(3, 3, 3), padding=(1, 1, 1))
         self.temporal_bn2 = nn.BatchNorm3d(256)
+        # Feature reduction layer
+        self.feature_selection = nn.Conv2d(self.feature_dim, self.feature_dim // 2, kernel_size=1)
+        self.feature_dim = self.feature_dim // 2  # Update feature dimension
         
         # Attention mechanism for better temporal feature extraction
         self.attention = nn.Sequential(
@@ -242,6 +245,11 @@ class EnhancedTemporalCNN(nn.Module):
         x = x.view(batch_size * timesteps, c, h, w)
         x = self.base_features(x)
 
+        # Apply feature selection
+        x = x.view(batch_size * timesteps, self.feature_dim, 1, 1)
+        x = self.feature_selection(x)
+        x = F.relu(x)
+
         # Reshape for temporal processing
         x = x.view(batch_size, timesteps, self.feature_dim, 1, 1)
         x = x.permute(0, 2, 1, 3, 4)  # [batch_size, channels, timesteps, height, width]
@@ -266,7 +274,7 @@ class EnhancedTemporalCNN(nn.Module):
 
 
 class TwoStageModel:
-    def __init__(self, video_data, model_path=None, frame_count=10, dropout_rate=0.7, 
+    def __init__(self, video_data, model_path=None, frame_count=10, dropout_rate=0.8, 
                  use_weighted_sampler=True, class_weight_epsilon=5):
         """Initialize with improved parameters"""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -281,15 +289,15 @@ class TwoStageModel:
             transforms.Resize((256, 256)),
             transforms.RandomCrop(224),
             transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomVerticalFlip(p=0.1),
-            transforms.RandomRotation(15),
-            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
-            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
-            transforms.RandomPerspective(distortion_scale=0.2, p=0.5),
-            transforms.RandomApply([transforms.GaussianBlur(3)], p=0.3),  # New
+            transforms.RandomVerticalFlip(p=0.2),
+            transforms.RandomRotation(20),
+            transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.2),
+            transforms.RandomAffine(degrees=10, translate=(0.15, 0.15), scale=(0.8, 1.2)),
+            transforms.RandomPerspective(distortion_scale=0.3, p=0.7),
+            transforms.RandomApply([transforms.GaussianBlur(3)], p=0.4),  # New
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            transforms.RandomErasing(p=0.3)  # Increased from 0.2
+            transforms.RandomErasing(p=0.5, scale=(0.02, 0.15))  # Increased from 0.2
         ])
 
         self.test_transform = transforms.Compose([
@@ -321,8 +329,13 @@ class TwoStageModel:
 
         num_features = model.classifier[1].in_features
         model.classifier = nn.Sequential(
-            nn.Dropout(dropout_rate, inplace=True),  # Use passed dropout rate
-            nn.Linear(num_features, num_classes)
+            nn.BatchNorm1d(num_features),
+            nn.Dropout(dropout_rate, inplace=True),
+            nn.Linear(num_features, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate/2, inplace=True),
+            nn.Linear(512, num_classes)
         )
         return model
 
@@ -467,7 +480,7 @@ class TwoStageModel:
             
             # Clip gradients to prevent exploding gradients
             self.scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
             
             self.scaler.step(optimizer)
             self.scaler.update()
@@ -542,15 +555,15 @@ class TwoStageModel:
         
         return val_loss, val_acc    
             
-    def train_first_stage(self, epochs=40, learning_rate=0.0003, weight_decay=5e-4, 
-                        patience=15, label_smoothing=0.1):
+    def train_first_stage(self, epochs=30, learning_rate=0.0003, weight_decay=1e-3, 
+                    patience=8, label_smoothing=0.1, mixup_alpha=0.2):
         """Improved first stage training with new parameters"""
         # Compute class weights
         # if class_weight_epsilon is None:
         #     class_weight_epsilon = self.class_weight_epsilon
 
         y_train = np.array([self.first_stage_train_dataset.class_to_idx[label]
-                          for label in self.first_stage_train_dataset.labels])
+                        for label in self.first_stage_train_dataset.labels])
         class_weights = class_weight.compute_class_weight(
             'balanced', classes=np.unique(y_train), y=y_train
         )
@@ -588,18 +601,19 @@ class TwoStageModel:
         for param in self.first_stage_model.parameters():
             param.requires_grad = True
 
-        optimizer = optim.AdamW(
-            self.first_stage_model.parameters(),
-            lr=learning_rate,
-            weight_decay=weight_decay
-        )
+        # Step 8: Use different learning rates for different parts of the model
+        params = [
+            {'params': [p for n, p in self.first_stage_model.named_parameters() if 'classifier' not in n], 'lr': learning_rate/10},
+            {'params': self.first_stage_model.classifier.parameters(), 'lr': learning_rate}
+        ]
+        optimizer = optim.AdamW(params, weight_decay=weight_decay)
 
         scheduler = optim.lr_scheduler.OneCycleLR(
             optimizer,
-            max_lr=learning_rate*5,  # Reduced peak LR from *10 to *5
+            max_lr=learning_rate*3,  # Reduced peak LR from *10 to *5
             epochs=epochs - warmup_epochs,
             steps_per_epoch=len(self.first_stage_train_loader),
-            pct_start=0.3,
+            pct_start=0.2,
             anneal_strategy='cos',
             div_factor=25.0,
             final_div_factor=10000.0
@@ -621,27 +635,43 @@ class TwoStageModel:
             for batch_idx, (inputs, labels) in enumerate(self.first_stage_train_loader):
                 inputs, labels = inputs.to(self.device), labels.to(self.device)
 
-                optimizer.zero_grad()
-                with autocast():
-                    outputs = self.first_stage_model(inputs)
-                    loss = criterion(outputs, labels)
+                # Step 7: Apply mixup augmentation
+                if mixup_alpha > 0 and np.random.random() < 0.5:  # Apply mixup 50% of the time
+                    lam = np.random.beta(mixup_alpha, mixup_alpha)
+                    index = torch.randperm(inputs.size(0)).to(self.device)
+                    mixed_inputs = lam * inputs + (1 - lam) * inputs[index]
+                    labels_a, labels_b = labels, labels[index]
+                    
+                    optimizer.zero_grad()
+                    with autocast():
+                        outputs = self.first_stage_model(mixed_inputs)
+                        loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
+                    
+                    # For accuracy calculation, use the primary labels
+                    _, predicted = torch.max(outputs, 1)
+                else:
+                    optimizer.zero_grad()
+                    with autocast():
+                        outputs = self.first_stage_model(inputs)
+                        loss = criterion(outputs, labels)
+                    
+                    _, predicted = torch.max(outputs, 1)
 
                 self.scaler.scale(loss).backward()
                 self.scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(self.first_stage_model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(self.first_stage_model.parameters(), max_norm=0.5)  # Changed from 1.0 to 0.5
                 self.scaler.step(optimizer)
                 self.scaler.update()
                 scheduler.step()
 
                 train_loss += loss.item() * inputs.size(0)
-                _, predicted = torch.max(outputs, 1)
                 train_total += labels.size(0)
                 train_correct += (predicted == labels).sum().item()
 
                 if (batch_idx + 1) % 10 == 0:
                     print(f"First Stage - Epoch {epoch + 1}/{epochs - warmup_epochs} | "
-                          f"Batch {batch_idx + 1}/{len(self.first_stage_train_loader)} | "
-                          f"Loss: {loss.item():.4f}")
+                        f"Batch {batch_idx + 1}/{len(self.first_stage_train_loader)} | "
+                        f"Loss: {loss.item():.4f}")
 
             train_loss = train_loss / train_total
             train_acc = train_correct / train_total
@@ -664,9 +694,9 @@ class TwoStageModel:
             history['val_acc'].append(val_acc)
 
             print(f"First Stage - Epoch {epoch + 1}/{epochs - warmup_epochs} - "
-                  f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
-                  f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, "
-                  f"LR: {current_lr:.6f}")
+                f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
+                f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, "
+                f"LR: {current_lr:.6f}")
 
             if no_improve_counter >= patience:
                 print(f"Early stopping triggered at epoch {epoch + 1}")
