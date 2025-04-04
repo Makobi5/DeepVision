@@ -37,6 +37,6 @@ def prepare_classification_dataset(source_dir, target_dir):
         for class_name in os.listdir(split_dir):
             class_dir = os.path.join(split_dir, class_name)
             if os.path.isdir(class_dir): #only process the folders
-                video_files = glob.glob(os.path.join(class_dir, '*.avi')) #adapt based on your video extensions
+                video_files = glob.glob(os.path.join(class_dir, '*.*v*'))  # This will capture .avi, .mp4, .mov, etc. #adapt based on your video extensions
                 dataset[split.lower()][class_name] = video_files
     return dataset

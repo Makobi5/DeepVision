@@ -266,37 +266,30 @@ class EnhancedTemporalCNN(nn.Module):
 
 
 class TwoStageModel:
-    def __init__(self, video_data, model_path=None, frame_count=10, dropout_rate=0.6, use_weighted_sampler=True):
-        """Initialize the two-stage model for video classification
-
-        Args:
-            video_data (dict): Dictionary containing video paths for training and testing.
-            model_path (dict, optional): Dictionary containing paths to pre-trained weights. Default is None.
-            frame_count (int): Number of frames to extract per video. Default is 10.
-            dropout_rate (float): Dropout rate for the models. Default is 0.6.
-            use_weighted_sampler (bool): Whether to use weighted sampler for imbalanced classes. Default is True.
-        """
-        # Set device
+    def __init__(self, video_data, model_path=None, frame_count=10, dropout_rate=0.7, 
+                 use_weighted_sampler=True, class_weight_epsilon=5):
+        """Initialize with improved parameters"""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
-
-        # Set parameters
+        
         self.frame_count = frame_count
         self.use_weighted_sampler = use_weighted_sampler
+        self.class_weight_epsilon = class_weight_epsilon
 
-        # Define transforms with enhanced augmentation
+        # Enhanced transforms with more augmentation
         self.train_transform = transforms.Compose([
-            transforms.Resize((256, 256)),  # Larger resize for random cropping
-            transforms.RandomCrop(224),     # Random crop for location invariance
+            transforms.Resize((256, 256)),
+            transforms.RandomCrop(224),
             transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomVerticalFlip(p=0.1),  # Sometimes videos are flipped
-            transforms.RandomRotation(15),  # Increased rotation
+            transforms.RandomVerticalFlip(p=0.1),
+            transforms.RandomRotation(15),
             transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
-            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),  # Add translation
-            transforms.RandomPerspective(distortion_scale=0.2, p=0.5),  # Add perspective
+            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
+            transforms.RandomPerspective(distortion_scale=0.2, p=0.5),
+            transforms.RandomApply([transforms.GaussianBlur(3)], p=0.3),  # New
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            transforms.RandomErasing(p=0.2)  # Randomly erase parts of the image
+            transforms.RandomErasing(p=0.3)  # Increased from 0.2
         ])
 
         self.test_transform = transforms.Compose([
@@ -305,65 +298,39 @@ class TwoStageModel:
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
 
-        # Initialize datasets for both stages
-        # For the first stage: Normal vs Not Normal (Violence + Weaponized)
+        # Initialize datasets
         self._prepare_first_stage_data(video_data)
-
-        # For the second stage: Violence vs Weaponized
         self._prepare_second_stage_data(video_data)
 
-        # Initialize models
-        # Use EfficientNet for first stage
-        self.first_stage_model = self._create_model(num_classes=2)  # Normal vs Not Normal
-        # Use the enhanced temporal CNN for second stage
+        # Initialize models with higher dropout
+        self.first_stage_model = self._create_model(num_classes=2, dropout_rate=dropout_rate)
         self.second_stage_model = EnhancedTemporalCNN(num_classes=2, dropout_rate=dropout_rate)
-
-        # Move models to device
+        
         self.first_stage_model = self.first_stage_model.to(self.device)
         self.second_stage_model = self.second_stage_model.to(self.device)
-
-        # Load pre-trained weights if provided
-        if model_path and isinstance(model_path, dict):
-            if 'first_stage' in model_path and os.path.exists(model_path['first_stage']):
-                self.first_stage_model.load_state_dict(torch.load(model_path['first_stage'], map_location=self.device))
-                print(f"Loaded first stage weights from {model_path['first_stage']}")
-
-            if 'second_stage' in model_path and os.path.exists(model_path['second_stage']):
-                self.second_stage_model.load_state_dict(torch.load(model_path['second_stage'], map_location=self.device))
-                print(f"Loaded second stage weights from {model_path['second_stage']}")
-
-        # Initialize mixed precision training for faster training and memory efficiency
         self.scaler = GradScaler()
 
-    def _create_model(self, num_classes):
-        """Create a model for classification based on EfficientNet"""
-        # Load pre-trained EfficientNet-B2 (better performance/size tradeoff than ResNet50)
+    def _create_model(self, num_classes, dropout_rate=0.7):
+        """Create model with configurable dropout"""
         model = models.efficientnet_b2(pretrained=True)
-
-        # Freeze early layers to prevent overfitting
+        
+        # Freeze early layers
         for name, param in model.named_parameters():
             if 'features.0' in name or 'features.1' in name:
                 param.requires_grad = False
 
-        # Replace the final fully connected layer
         num_features = model.classifier[1].in_features
         model.classifier = nn.Sequential(
-            nn.Dropout(0.6, inplace=True),  # Increased dropout
+            nn.Dropout(dropout_rate, inplace=True),  # Use passed dropout rate
             nn.Linear(num_features, num_classes)
         )
-
         return model
 
     def _prepare_first_stage_data(self, video_data):
-        """Prepare data for the first stage: Normal vs Not Normal"""
-        # Create a modified version of video_data for binary classification
+        """Prepare data with improved class weighting"""
         binary_video_data = {'train': {}, 'test': {}}
-
-        # Normal class stays as is
         binary_video_data['train']['Normal'] = video_data['train']['Normal']
         binary_video_data['test']['Normal'] = video_data['test']['Normal']
-
-        # Combine Violence and Weaponized into "Not Normal"
         binary_video_data['train']['Not_Normal'] = []
         binary_video_data['test']['Not_Normal'] = []
 
@@ -383,30 +350,28 @@ class TwoStageModel:
             frame_count=self.frame_count, split='test', temporal_features=False
         )
 
-        # Create weighted sampler for training data
+        # Improved weighted sampler with epsilon
         if self.use_weighted_sampler:
             class_counts = Counter([self.first_stage_train_dataset.class_to_idx[label]
-                                   for label in self.first_stage_train_dataset.labels])
-            class_weights = {class_idx: 1.0 / count for class_idx, count in class_counts.items()}
+                                  for label in self.first_stage_train_dataset.labels])
+            class_weights = {class_idx: 1.0 / (count + self.class_weight_epsilon) 
+                           for class_idx, count in class_counts.items()}
             sample_weights = [class_weights[self.first_stage_train_dataset.class_to_idx[label]]
                              for label in self.first_stage_train_dataset.labels]
-            sampler = WeightedRandomSampler(weights=sample_weights, num_samples=len(sample_weights), replacement=True)
+            sampler = WeightedRandomSampler(sample_weights, len(sample_weights), replacement=True)
             shuffle = False
         else:
             sampler = None
             shuffle = True
 
-        # Initialize DataLoaders with worker_init_fn for stability
         self.first_stage_train_loader = DataLoader(
             self.first_stage_train_dataset, batch_size=32, shuffle=shuffle,
-            sampler=sampler, num_workers=0, pin_memory=True, 
-            worker_init_fn=lambda worker_id: np.random.seed(np.random.get_state()[1][0] + worker_id)
+            sampler=sampler, num_workers=4, pin_memory=True  # Increased workers
         )
 
         self.first_stage_test_loader = DataLoader(
             self.first_stage_test_dataset, batch_size=32, shuffle=False,
-            num_workers=0, pin_memory=True,
-            worker_init_fn=lambda worker_id: np.random.seed(np.random.get_state()[1][0] + worker_id)
+            num_workers=4, pin_memory=True
         )
 
     def _prepare_second_stage_data(self, video_data):
@@ -577,80 +542,61 @@ class TwoStageModel:
         
         return val_loss, val_acc    
             
-    def train_first_stage(self, epochs=30, learning_rate=0.0003, weight_decay=3e-4, patience=10, label_smoothing=0.05):
-        """Train the first stage model (Normal vs Not Normal) with progressive unfreezing
+    def train_first_stage(self, epochs=40, learning_rate=0.0003, weight_decay=5e-4, 
+                        patience=15, label_smoothing=0.1):
+        """Improved first stage training with new parameters"""
+        # Compute class weights
+        # if class_weight_epsilon is None:
+        #     class_weight_epsilon = self.class_weight_epsilon
 
-        Args:
-            epochs (int): Number of epochs for training. Default is 30.
-            learning_rate (float): Learning rate for optimizer. Default is 0.0003.
-            weight_decay (float): Weight decay for regularization. Default is 3e-4.
-            patience (int): Early stopping patience. Default is 10.
-            label_smoothing (float): Label smoothing factor. Default is 0.05.
-
-        Returns:
-            dict: Training history containing loss, accuracy and learning rates
-        """
-        print("Training first stage model: Normal vs Not Normal")
-
-        # Compute class weights for loss function
         y_train = np.array([self.first_stage_train_dataset.class_to_idx[label]
-                           for label in self.first_stage_train_dataset.labels])
+                          for label in self.first_stage_train_dataset.labels])
         class_weights = class_weight.compute_class_weight(
             'balanced', classes=np.unique(y_train), y=y_train
         )
         class_weights = torch.tensor(class_weights, dtype=torch.float).to(self.device)
         print(f"First stage class weights: {class_weights}")
 
-        # Training history
         history = {
-            'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'learning_rates': []
+            'train_loss': [], 'train_acc': [], 
+            'val_loss': [], 'val_acc': [], 
+            'learning_rates': []
         }
 
-        # Stage 1: Train only the classifier for few epochs (warm-up)
-        print("First stage warm-up: training only the classifier")
+        # Warm-up phase
+        print("First stage warm-up: training only classifier")
         for param in self.first_stage_model.parameters():
             param.requires_grad = False
-            
-        # Only train the final classifier
         for param in self.first_stage_model.classifier.parameters():
             param.requires_grad = True
-            
-        # Define loss function and optimizer for warm-up
+
         criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
         optimizer = optim.AdamW(
             filter(lambda p: p.requires_grad, self.first_stage_model.parameters()),
-            lr=learning_rate / 10,  # Lower learning rate for warm-up
+            lr=learning_rate/10,  # Lower warm-up LR
             weight_decay=weight_decay
         )
-        
-        # Train for 5 epochs or 1/6 of total epochs, whichever is larger
+
         warmup_epochs = max(5, epochs // 6)
-        
-        # Warm-up training loop
         for epoch in range(warmup_epochs):
-            self._train_epoch(
-                epoch, warmup_epochs, self.first_stage_model, 
-                self.first_stage_train_loader, self.first_stage_test_loader,
-                optimizer, criterion, history, "First Stage Warm-up"
-            )
-            
-        # Stage 2: Progressive unfreezing and training all layers
+            self._train_epoch(epoch, warmup_epochs, self.first_stage_model,
+                            self.first_stage_train_loader, self.first_stage_test_loader,
+                            optimizer, criterion, history, "First Stage Warm-up")
+
+        # Main training
         print("First stage main training: unfreezing all layers")
         for param in self.first_stage_model.parameters():
             param.requires_grad = True
-            
-        # Define loss function and optimizer for main training
-        criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
+
         optimizer = optim.AdamW(
             self.first_stage_model.parameters(),
             lr=learning_rate,
             weight_decay=weight_decay
         )
 
-        # Use a 1cycle policy for learning rate scheduling
         scheduler = optim.lr_scheduler.OneCycleLR(
             optimizer,
-            max_lr=learning_rate * 10,
+            max_lr=learning_rate*5,  # Reduced peak LR from *10 to *5
             epochs=epochs - warmup_epochs,
             steps_per_epoch=len(self.first_stage_train_loader),
             pct_start=0.3,
@@ -659,18 +605,14 @@ class TwoStageModel:
             final_div_factor=10000.0
         )
 
-        # Initialize tracking variables
         best_val_acc = max(history['val_acc']) if history['val_acc'] else 0.0
         no_improve_counter = 0
         best_model_path = os.path.join('models', 'first_stage_best.pth')
 
-        # Main training loop
         for epoch in range(epochs - warmup_epochs):
-            # Get current learning rate
             current_lr = optimizer.param_groups[0]['lr']
             history['learning_rates'].append(current_lr)
 
-            # Training phase
             self.first_stage_model.train()
             train_loss = 0.0
             train_correct = 0
@@ -679,80 +621,59 @@ class TwoStageModel:
             for batch_idx, (inputs, labels) in enumerate(self.first_stage_train_loader):
                 inputs, labels = inputs.to(self.device), labels.to(self.device)
 
-                # Zero the parameter gradients
                 optimizer.zero_grad()
-
-                # Forward pass with mixed precision
                 with autocast():
                     outputs = self.first_stage_model(inputs)
                     loss = criterion(outputs, labels)
 
-                # Backward pass and optimize with gradient scaling
                 self.scaler.scale(loss).backward()
-                
-                # Clip gradients to prevent exploding gradients
                 self.scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(self.first_stage_model.parameters(), max_norm=1.0)
-                
                 self.scaler.step(optimizer)
                 self.scaler.update()
-
-                # Update learning rate
                 scheduler.step()
 
-                # Track statistics
                 train_loss += loss.item() * inputs.size(0)
                 _, predicted = torch.max(outputs, 1)
                 train_total += labels.size(0)
                 train_correct += (predicted == labels).sum().item()
 
-                # Print progress every 10 batches
                 if (batch_idx + 1) % 10 == 0:
                     print(f"First Stage - Epoch {epoch + 1}/{epochs - warmup_epochs} | "
                           f"Batch {batch_idx + 1}/{len(self.first_stage_train_loader)} | "
                           f"Loss: {loss.item():.4f}")
 
-            # Calculate average training loss and accuracy
             train_loss = train_loss / train_total
             train_acc = train_correct / train_total
 
-            # Validation phase
             val_loss, val_acc = self._validate(
                 self.first_stage_model, self.first_stage_test_loader, criterion
             )
 
-            # Check if this is the best model
             if val_acc > best_val_acc:
-                print(f"First Stage - Validation accuracy improved from {best_val_acc:.4f} to {val_acc:.4f}")
+                print(f"Validation accuracy improved from {best_val_acc:.4f} to {val_acc:.4f}")
                 best_val_acc = val_acc
                 no_improve_counter = 0
                 torch.save(self.first_stage_model.state_dict(), best_model_path)
-                print(f"Saved best first stage model at epoch {epoch + 1}")
             else:
                 no_improve_counter += 1
 
-            # Update history
             history['train_loss'].append(train_loss)
             history['train_acc'].append(train_acc)
             history['val_loss'].append(val_loss)
             history['val_acc'].append(val_acc)
 
-            # Print statistics
             print(f"First Stage - Epoch {epoch + 1}/{epochs - warmup_epochs} - "
                   f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
                   f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, "
                   f"LR: {current_lr:.6f}")
 
-            # Early stopping check
             if no_improve_counter >= patience:
-                print(f"First Stage - Early stopping triggered at epoch {epoch + 1}")
+                print(f"Early stopping triggered at epoch {epoch + 1}")
                 break
 
-        # Load the best model
-        print(f"Loading best first stage model")
+        print("Loading best first stage model")
         self.first_stage_model.load_state_dict(torch.load(best_model_path))
-        self.first_stage_model.eval()
-
         return history
     def train_second_stage(self, epochs=80, learning_rate=0.0005, weight_decay=3e-4, patience=20,
                       label_smoothing=0.05, mixup_alpha=0.2):
