@@ -1,4 +1,4 @@
-# DeepVision - AI Video Threat Detector
+# DeepVision - A real time Crime Detector in CCTV Camera
 
 DeepVision is an intelligent video surveillance solution powered by Google Gemini. It analyzes live video or recorded footage in real-time to detect potential security threats such as weapons and physical altercations, providing immediate visual and audio alerts via Google Cloud Text-to-Speech.
 
