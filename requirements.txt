@@ -16,6 +16,7 @@ python-dotenv>=0.19.0
 supabase>=2.15.0
 requests>=2.28.0
 qrcode>=7.3.0
+gtts
 
 # Added for Gemini Video Analyzer script
 google-generativeai>=0.4.0 # Or just google-generativeai if you want the latest

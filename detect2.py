@@ -307,10 +307,6 @@ class GeminiVideoAnalyzer:
             description = "Abnormal event detected." if is_abnormal else "Normal scene."
         return is_abnormal, description
 
-# In class GeminiVideoAnalyzer:
-
-# In class GeminiVideoAnalyzer:
-
     def _make_api_request(self, frame_bytes: bytes, timestamp: float) -> Dict[str, Any]:
         """Make API request to Gemini with proper error handling"""
         if not self.gemini_model:
@@ -318,55 +314,47 @@ class GeminiVideoAnalyzer:
             return {"is_abnormal": False, "description": "Error: Model not initialized", "timestamp": timestamp}
         
         retry_count = 0
-        
-        # --- NEW "CAUSE-FIRST" HIERARCHICAL PROMPT ---
-        prompt = """You are a hyper-vigilant AI security analyst. Your single most important job is to identify the **human actor** causing a threat and describe their action.
+        prompt = """You are an AI security assistant analyzing CCTV frames for immediate threats or concerning anomalies. Your primary goal is to flag potential danger EARLY.
 
-                You **MUST** follow this internal thought process step-by-step before giving an answer:
-                **Step 1. Scan for Weapons:** Is there a person holding a gun, knife, or other weapon?
-                    - If YES: Stop. Your entire analysis is now about this armed person. Formulate the description based ONLY on this.
-                    - If NO: Proceed to Step 2.
+                Analyze this image THOROUGHLY, examining ALL AREAS of the frame systematically for ANY of the following:
 
-                **Step 2. Scan for Physical Aggression:** Is there an active fight, a person assaulting another, or a clear aggressor?
-                    - If YES: Stop. Your analysis is about the aggressors. Formulate the description based ONLY on this.
-                    - If NO: Proceed to Step 3.
+                1. **Weapons:** Clearly visible guns, knives, machetes, pangas, large sticks/bats held aggressively, or any objects being wielded as potential weapons.
+                2. **Physical Altercations:** Active fighting, hitting, kicking, grappling, pushing/shoving matches, someone on the ground being attacked, fallen individuals who may be victims, or any physical struggle between individuals.
+                3. **Strong Precursors / Suspicious Activity:**
+                * Sudden, panicked mass running or scattering of people
+                * A dense, agitated crowd forming rapidly around a specific point or individuals
+                * Individuals in obviously aggressive postures confronting each other
+                * Someone being chased aggressively by others
+                * Unusual groupings or formations that suggest imminent conflict
+                * Individuals on the ground who may have fallen or been attacked
 
-                **Step 3. Analyze the Scene for Critical Events:** If there are no visible weapons or fights, what is the most likely cause of any distress? (e.g., panicked running, people on the ground). Describe this secondary event.
+                Instructions:
+                1. CRITICAL: Scan the ENTIRE frame systematically.
+                2. On the VERY FIRST line, respond ONLY with the word "ABNORMAL" if ANY of the above are present or very strongly indicated. Prioritize safety: If unsure but suspicious based on precursors, lean towards ABNORMAL.
+                3. If none of the above are clearly present, respond ONLY with the word "NORMAL" on the first line.
+                4. On the NEXT line(s), provide a very brief (1 sentence) justification focusing on the MOST significant observation that led to your NORMAL/ABNORMAL classification. Specify the location if possible.
 
-                **Your Response Format is ABSOLUTELY STRICT:**
+                Example NORMAL response:
+                NORMAL
+                Pedestrians walking and normal vehicle traffic flow observed.
 
-                **Line 1:** A single word: "ABNORMAL" or "NORMAL".
-                - Classify as ABNORMAL if the result of your thought process (Step 1, 2, or 3) indicates a threat.
+                Example ABNORMAL response (Weapon):
+                ABNORMAL
+                Individual near the bottom appears to be holding a long knife-like object.
 
-                **Line 2:** A single, concise sentence based **ONLY** on the highest-priority step you identified.
-                - **THIS HIERARCHY IS NOT A SUGGESTION; IT IS A STRICT RULE.** Do not describe fallen people (Step 3) if you can see the armed person who caused it (Step 1). Do not describe a crowd (Step 3) if you can see the fight that caused it (Step 2).
+                Example ABNORMAL response (Altercation):
+                ABNORMAL
+                Physical fight involving several individuals in the lower right corner.
 
-                ---
-                **Example for your internal logic (User's Image):**
-                1.  *Weapon Scan:* Yes, a man is holding a dark object that looks like a firearm.
-                2.  *Action:* Stop analysis. My priority is the armed man.
-                3.  *Result:*
-                    ABNORMAL
-                    A person is holding what appears to be a firearm, standing over several people on the floor.
+                Example ABNORMAL response (Precursor):
+                ABNORMAL
+                A large crowd is suddenly running away from the upper left area.
 
-                **Example for a fight:**
-                1.  *Weapon Scan:* No.
-                2.  *Aggression Scan:* Yes, two people are shoving each other.
-                3.  *Action:* Stop analysis. My priority is the fight.
-                4.  *Result:*
-                    ABNORMAL
-                    A physical altercation is occurring between two individuals in the center.
-
-                **Example for panic (no visible cause):**
-                1. *Weapon Scan:* No.
-                2. *Aggression Scan:* No.
-                3. *Event Analysis:* Yes, a crowd is running away in panic.
-                4. *Result:*
-                    ABNORMAL
-                    A large crowd is running away from an unseen threat.
+                Example ABNORMAL response (Precursor):
+                ABNORMAL
+                Agitated group forming tightly around a person near the white van.
                 """
-        # --- END OF NEW PROMPT ---
-
+        
         try:
             img_pil = Image.open(io.BytesIO(frame_bytes))
         except Exception as e:
@@ -379,20 +367,18 @@ class GeminiVideoAnalyzer:
             try:
                 response = self.gemini_model.generate_content(
                     [prompt, img_pil], 
-                    # --- CRITICAL CHANGE: Set temperature to 0 for maximum rule-following ---
-                    generation_config=genai.types.GenerationConfig(temperature=0.0),
+                    generation_config=genai.types.GenerationConfig(temperature=0.2), 
                     request_options={'timeout': API_TIMEOUT}
                 )
                 raw_response = response.text if response.text else "NO_RESPONSE"
                 self.logger.debug(f"API Raw Response @{timestamp:.2f}s:\n{raw_response}")
                 is_abnormal, description = self._parse_gemini_response(raw_response)
-                self.logger.info(f"Parsed @{timestamp:.2f}s: Abnormal={is_abnormal}, Desc='{description}'") # Log full description now
+                self.logger.debug(f"Parsed @{timestamp:.2f}s: Abnormal={is_abnormal}, Desc='{description[:60]}...'")
                 return {"is_abnormal": is_abnormal, "description": description, "timestamp": timestamp}
             except Exception as e:
-                # ... (rest of the error handling is fine) ...
                 if "response was blocked" in str(e).lower():
                     self.logger.warning(f"API request potentially blocked (attempt {retry_count+1}).")
-                    return {"is_abnormal": True, "description": "Analysis blocked - Potential sensitive content.", "timestamp": timestamp}
+                    return {"is_abnormal": True, "description": "Analysis blocked - Sensitive content.", "timestamp": timestamp}
                 retry_count += 1
                 self.logger.warning(f"API request failed (attempt {retry_count}/{MAX_API_RETRIES}): {type(e).__name__}: {e}")
                 if retry_count >= MAX_API_RETRIES:
@@ -404,12 +390,6 @@ class GeminiVideoAnalyzer:
                     return {"is_abnormal": False, "description": "Cancelled during retry", "timestamp": timestamp}
         
         return {"is_abnormal": False, "description": "Error: Max retries reached", "timestamp": timestamp}
-
-# No other code changes are needed.
-
-# No other changes are needed in the file.
-        
-        
 
     def _analyze_frame_task(self, frame_bytes: bytes, timestamp: float):
         """Background task to analyze a single frame"""
