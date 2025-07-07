@@ -404,12 +404,7 @@ class GeminiVideoAnalyzer:
                     return {"is_abnormal": False, "description": "Cancelled during retry", "timestamp": timestamp}
         
         return {"is_abnormal": False, "description": "Error: Max retries reached", "timestamp": timestamp}
-
-# No other code changes are needed.
-
-# No other changes are needed in the file.
-        
-        
+    
 
     def _analyze_frame_task(self, frame_bytes: bytes, timestamp: float):
         """Background task to analyze a single frame"""
@@ -446,15 +441,18 @@ class GeminiVideoAnalyzer:
         
         cv2.putText(img, text, (x, y), font, scale, color, thickness, lineType=cv2.LINE_AA)
 
+# In class GeminiVideoAnalyzer:
+
     def play_and_analyze_video(self, video_path: Optional[str] = None, use_webcam: bool = False):
         """
-        Main method to process video stream and perform continuous analysis with persistent alerts.
-        
+        Main method to process a video stream, perform analysis, and manage alerts.
+        This method features real-time playback synchronization and low-latency audio alerts.
+
         Args:
-            video_path: Path to video file (if use_webcam is False)
-            use_webcam: Boolean flag to use webcam instead of video file
+            video_path: Path to the video file (if use_webcam is False).
+            use_webcam: Boolean flag to use the webcam instead of a file.
         """
-        # Initialize video source
+        # --- 1. INITIALIZE VIDEO SOURCE ---
         if use_webcam:
             self.logger.info("Opening webcam...")
             cap = cv2.VideoCapture(0)
@@ -464,209 +462,173 @@ class GeminiVideoAnalyzer:
             cap = cv2.VideoCapture(video_path)
             source_name = Path(video_path).name
         else:
-            self.logger.error("No valid video source.")
+            self.logger.error("No valid video source provided.")
             return
-        
-        # Check if video source opened successfully
+
         if not cap.isOpened():
             self.logger.error(f"Could not open video source: {source_name}")
             return
-        
-        # --- MODIFICATION START: Improved FPS Handling ---
-        # Get video properties
+
+        # --- 2. SETUP PLAYBACK TIMING ---
         fps = cap.get(cv2.CAP_PROP_FPS)
-        # If FPS is 0 or invalid (common with webcams), default to a reasonable value like 30.
         if not fps or fps <= 0:
-            self.logger.warning(f"Could not get valid FPS from source '{source_name}'. Defaulting to 30 FPS.")
+            self.logger.warning(f"Source '{source_name}' has invalid FPS. Defaulting to 30.")
             fps = 30
         
-        # Calculate the delay needed between frames for real-time playback
+        # Calculate the delay in milliseconds required between frames for real-time playback.
         frame_delay_ms = int(1000 / fps)
-        self.logger.info(f"Source: {source_name}, Target FPS: {fps:.2f}, Frame Delay: {frame_delay_ms}ms, Analysis Interval: {self.frame_interval} frames")
-        # --- MODIFICATION END ---
-        
-        # Create display window
+        self.logger.info(f"Source: {source_name}, Target FPS: {fps:.2f}, Frame Delay: {frame_delay_ms}ms")
+
+        # --- 3. SETUP DISPLAY AND COUNTERS ---
         window_name = "Gemini Violence & Weapon Detector"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        
-        # Initialize frame counter and timing
         frame_count = 0
         start_time = time.time()
 
         try:
-            # --- MODIFICATION: Use cap.isOpened() for a more robust loop condition ---
+            # Main loop: continues as long as the video source is open and not stopped.
             while cap.isOpened() and not self.stop_event.is_set():
-                # --- MODIFICATION START: Robust Timing Logic ---
                 loop_start_time = time.time()
-                # --- MODIFICATION END ---
 
-                # Read frame from video source
+                # --- 4. READ AND PROCESS A FRAME ---
                 ret, frame = cap.read()
                 if not ret:
-                    # If ret is False, we've reached the end of the video file.
                     if not use_webcam:
                         self.logger.info("End of video file reached.")
-                        break # Exit the loop cleanly
+                        break  # Exit loop cleanly at the end of a video file.
                     else:
-                        # For a webcam, a False `ret` might be a temporary error.
-                        self.logger.warning("Webcam returned an empty frame. Retrying...")
-                        time.sleep(0.1) # Wait a moment before trying again
-                        continue 
-                
-                # Create copy for display and calculate timestamp
+                        self.logger.warning("Webcam returned empty frame. Retrying...")
+                        time.sleep(0.1)
+                        continue # For webcam, just try again.
+
                 display_frame = frame.copy()
                 timestamp = (time.time() - start_time) if use_webcam else (frame_count / fps)
-                
-                # Process every nth frame for analysis
+
+                # Send frame for analysis every Nth frame.
                 if frame_count % self.frame_interval == 0:
                     if len(self.futures) < MAX_WORKERS * 2:
-                        # Encode frame for processing
                         ret_encode, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
                         if ret_encode:
-                            # Submit frame to analysis thread pool
                             future = self.executor.submit(self._analyze_frame_task, buffer.tobytes(), timestamp)
                             self.futures.append(future)
                         else:
-                            self.logger.warning(f"Failed encode frame {frame_count}")
+                            self.logger.warning(f"Failed to encode frame {frame_count}")
                     else:
-                        self.logger.warning("Analysis queue full, skipping frame.")
+                        self.logger.warning("Analysis queue is full, skipping frame to avoid overload.")
 
-                # Process Results & Update Status/Description (No changes needed here)
-                processed_result_this_loop = False
+                # --- 5. HANDLE API RESULTS & TRIGGER IMMEDIATE AUDIO ALERTS ---
                 while not self.results_queue.empty():
                     try:
                         result = self.results_queue.get_nowait()
-                        self.logger.debug(f"Processing queue result: {result}")
-                        if isinstance(result, dict) and 'is_abnormal' in result and 'description' in result:
+                        if isinstance(result, dict) and 'is_abnormal' in result:
                             is_abnormal = result.get("is_abnormal", False)
-                            description = result.get("description", "Error: Description missing in result.")
-                            
+                            description = result.get("description", "No description.")
+
+                            # LOW-LATENCY AUDIO TRIGGER: Fire alert as soon as one abnormal result arrives.
+                            # The trigger_alert function has its own cooldown to prevent spamming.
                             if is_abnormal:
-                                camera_name = "webcam" if use_webcam else Path(video_path).name
-                                self.trigger_alert(camera_name=camera_name, immediate_description=description)
+                                self.trigger_alert(camera_name=source_name, immediate_description=description)
                             
+                            # Update history for VISUAL smoothing and update the last known description.
                             self.classification_history.append(is_abnormal)
                             self.last_description = description
-                            processed_result_this_loop = True
-                        else:
-                            self.logger.warning(f"Received malformed result from queue: {result}")
                     except queue.Empty:
                         break
                     except Exception as e:
                         self.logger.error(f"Error processing queue result: {e}")
 
-                # Temporal Smoothing for Detection Stability (No changes needed here)
+                # --- 6. TEMPORAL SMOOTHING FOR VISUALS ---
+                # This prevents the red border from flickering on single-frame misclassifications.
                 if len(self.classification_history) > 0:
                     abnormal_count = sum(1 for is_abn in self.classification_history if is_abn)
                     new_status_is_abnormal = abnormal_count >= ABNORMAL_THRESHOLD_COUNT
                 else:
                     new_status_is_abnormal = False
-
-                # Check for Status Change and Trigger Alert (No changes needed here)
+                
                 if new_status_is_abnormal and not self.previous_status_is_abnormal:
-                    self.logger.info("ALERT: Status changed to ABNORMAL")
-                    camera_name = "webcam" if use_webcam else Path(video_path).name
-                    self.trigger_alert(camera_name)
+                    self.logger.info("VISUAL status changed to ABNORMAL due to sustained detection.")
                 
                 self.current_status_is_abnormal = new_status_is_abnormal
                 self.previous_status_is_abnormal = new_status_is_abnormal
 
-                # Display Frame and Info (No changes needed here, all drawing functions are fine)
+                # --- 7. DRAW OVERLAYS ON THE FRAME ---
                 status_text = "ABNORMAL" if self.current_status_is_abnormal else "NORMAL"
                 status_color = COLOR_ABNORMAL if self.current_status_is_abnormal else COLOR_NORMAL
                 
-                self._draw_text_with_background(display_frame, status_text, (10, 30), FONT, FONT_SCALE_STATUS, status_color, FONT_THICKNESS_STATUS)
-                time_str = f"T: {timestamp:.2f}s"; self._draw_text_with_background(display_frame, time_str, (10, 70), FONT, FONT_SCALE_INFO, COLOR_INFO, FONT_THICKNESS_INFO)
-                
-                if self.alert_acknowledge_needed:
-                    alert_text = "ACTIVE ALERT - PRESS 'C' TO ACKNOWLEDGE"; text_size, _ = cv2.getTextSize(alert_text, FONT, FONT_SCALE_STATUS, FONT_THICKNESS_STATUS)
-                    text_x = display_frame.shape[1] - text_size[0] - 20; text_y = 50; flash_on = int(time.time() * 2) % 2 == 0
-                    bg_color = (0, 0, 200) if flash_on else (200, 0, 0)
-                    self._draw_text_with_background(display_frame, alert_text, (text_x, text_y), FONT, FONT_SCALE_STATUS, (255, 255, 255), FONT_THICKNESS_STATUS, bg_color, padding=10)
-                
-                desc_y_start = 110
-                current_desc_to_draw = str(self.last_description) if self.last_description is not None else "Waiting for description..."
-                wrapped_desc = textwrap.wrap(current_desc_to_draw, width=DESC_WRAP_WIDTH)
+                # Draw main status and timestamp
+                self._draw_text_with_background(display_frame, status_text, (20, 40), FONT, FONT_SCALE_STATUS, status_color, FONT_THICKNESS_STATUS)
+                self._draw_text_with_background(display_frame, f"T: {timestamp:.2f}s", (20, 80), FONT, FONT_SCALE_INFO, COLOR_INFO, FONT_THICKNESS_INFO)
+
+                # Draw description
+                desc_y_start = 120
+                wrapped_desc = textwrap.wrap(str(self.last_description), width=DESC_WRAP_WIDTH)
                 for i, line in enumerate(wrapped_desc):
-                    line_y = desc_y_start + i * 20
-                    if line_y > display_frame.shape[0] - 10: break
-                    self._draw_text_with_background(display_frame, line, (10, line_y), FONT, FONT_SCALE_INFO, COLOR_INFO, FONT_THICKNESS_INFO)
-                
+                    self._draw_text_with_background(display_frame, line, (20, desc_y_start + i * 25), FONT, FONT_SCALE_INFO, COLOR_INFO, FONT_THICKNESS_INFO)
+
+                # Draw flashing alert banner if an alert needs acknowledgment
+                if self.alert_acknowledge_needed:
+                    alert_text = "ACTIVE ALERT - PRESS 'C' TO ACKNOWLEDGE"
+                    text_size, _ = cv2.getTextSize(alert_text, FONT, FONT_SCALE_STATUS, FONT_THICKNESS_STATUS)
+                    text_x = display_frame.shape[1] - text_size[0] - 20
+                    flash_on = int(time.time() * 2) % 2 == 0
+                    bg_color = (0, 0, 220) if flash_on else (220, 0, 0)
+                    self._draw_text_with_background(display_frame, alert_text, (text_x, 50), FONT, FONT_SCALE_STATUS, (255, 255, 255), FONT_THICKNESS_STATUS, bg_color, padding=10)
+
+                # Draw red border if the SMOOTHED visual status is abnormal
                 if self.current_status_is_abnormal:
-                    h, w = display_frame.shape[:2]
-                    cv2.rectangle(display_frame, (0, 0), (w - 1, h - 1), COLOR_ABNORMAL, BORDER_THICKNESS)
-                
+                    cv2.rectangle(display_frame, (0, 0), (display_frame.shape[1] - 1, display_frame.shape[0] - 1), COLOR_ABNORMAL, BORDER_THICKNESS)
+
+                # --- 8. DISPLAY THE FRAME AND HANDLE USER INPUT ---
                 cv2.imshow(window_name, display_frame)
 
-                # --- MODIFICATION START: Corrected waitKey logic for real-time playback ---
-                # Calculate how long the processing in this loop took
-                loop_processing_time = (time.time() - loop_start_time) * 1000
-                # Calculate the necessary wait time to maintain the target FPS
-                # This subtracts the processing time from the target frame delay
-                wait_duration = max(1, frame_delay_ms - int(loop_processing_time))
-                
+                # Calculate wait time to maintain real-time playback speed
+                processing_time_ms = (time.time() - loop_start_time) * 1000
+                wait_duration = max(1, frame_delay_ms - int(processing_time_ms))
                 key = cv2.waitKey(wait_duration) & 0xFF
-                # --- MODIFICATION END ---
 
-                if key == ord('q') or key == 27:  # q or ESC
-                    self.logger.info("Quit key pressed.")
-                    self.stop_event.set()
+                if key == ord('q') or key == 27:
+                    self.logger.info("Quit key pressed. Shutting down.")
                     break
                 elif key == ord('a'):
-                    alert_status = "enabled" if self.toggle_alerts() else "disabled"
-                    self.logger.info(f"Alert system {alert_status}")
+                    status = "enabled" if self.toggle_alerts() else "disabled"
+                    self.logger.info(f"Audio alerts {status}.")
                 elif key == ord('c'):
                     if self.acknowledge_alert():
-                        ack_text = "ALERT ACKNOWLEDGED"
-                        text_size, _ = cv2.getTextSize(ack_text, FONT, FONT_SCALE_STATUS, FONT_THICKNESS_STATUS)
-                        text_x = (display_frame.shape[1] // 2) - (text_size[0] // 2)
-                        self._draw_text_with_background(display_frame, ack_text, (text_x, display_frame.shape[0] - 30), FONT, FONT_SCALE_STATUS, (0, 255, 255), FONT_THICKNESS_STATUS, (0, 0, 0), padding=10)
-                        cv2.imshow(window_name, display_frame)
-                        cv2.waitKey(1)
+                        self.logger.info("Alert acknowledged by user.")
 
-                # Update frame counter and clean up completed tasks
+                # --- 9. LOOP MAINTENANCE ---
                 frame_count += 1
                 if frame_count % (self.frame_interval * 5) == 0:
                     self._cleanup_futures()
 
         except KeyboardInterrupt:
-            self.logger.info("Keyboard Interrupt.")
-            self.stop_event.set()
+            self.logger.info("Keyboard Interrupt detected. Shutting down.")
         finally:
-            # Cleanup resources
+            # --- 10. CLEANUP ALL RESOURCES ---
             self.logger.info("Starting cleanup process...")
             self.stop_event.set()
-            
-            # Stop TTS and audio alerts
+
             self.stop_tts()
-            time.sleep(0.1)
-            
-            # Cancel any pending futures
+            time.sleep(0.2) # Give TTS thread a moment to stop
+
+            # Cancel any tasks still in the pipeline
             cancelled_count = 0
-            for future in list(self.futures):
-                if not future.done():
-                    if future.cancel():
-                        cancelled_count += 1
+            for future in self.futures:
+                if future.cancel():
+                    cancelled_count += 1
             if cancelled_count > 0:
-                self.logger.info(f"Cancelled {cancelled_count} pending Gemini tasks.")
-            
-            # Clear futures list
+                self.logger.info(f"Cancelled {cancelled_count} pending analysis tasks.")
             self.futures.clear()
-            
-            # Shutdown thread pool executor
-            self.logger.info("Shutting down Gemini thread pool executor...")
-            try:
-                self.executor.shutdown(wait=True, timeout=5.0)
-                self.logger.info("Gemini Executor shut down gracefully.")
-            except Exception as e:
-                self.logger.warning(f"Error during executor shutdown: {e}")
-            
-            # Release video source
+
+            # Shut down the thread pool
+            self.logger.info("Shutting down worker thread pool...")
+            self.executor.shutdown(wait=True)
+            self.logger.info("Worker threads shut down.")
+
             if cap:
                 cap.release()
                 self.logger.info("Video source released.")
-            
-            # Close all windows
+
             cv2.destroyAllWindows()
             self.logger.info("Display windows closed.")
             print("Analysis finished.")
